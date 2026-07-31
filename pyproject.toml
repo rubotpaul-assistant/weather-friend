@@ -146,7 +146,6 @@ exclude_dirs = ["tests", "venv", "virtualenv"]
 skips = ["B101"]  # Skip assert_used in tests
 
 [tool.mutmut]
-paths_to_mutate = "weather_friend/"
-backup = false
-runner = "python -m pytest --exitfirst --quiet --tb=no"
-tests_dir = "tests/"
+source_paths = ["weather_friend/"]
+pytest_add_cli_args = ["--exitfirst", "--quiet", "--tb=no", "--no-cov"]
+pytest_add_cli_args_test_selection = ["tests/"]

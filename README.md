@@ -187,10 +187,13 @@ async WeatherService.get_current_weather() -> WeatherData
 async WeatherService.get_weather_for_location(location: str) -> WeatherData
 ```
 
-Calls `GET https://api.openweathermap.org/data/2.5/weather` with
-`units=imperial`. 10-second timeout. Raises `httpx.HTTPStatusError` on
-non-2xx responses, `httpx.RequestError` on network failure, and
-`ValueError` for an unknown location.
+Calls OpenWeatherMap's current-conditions and five-day forecast endpoints with
+`units=imperial`. Daily highs and lows are aggregated from forecast intervals
+in the location's local calendar day. Two-part US city/state inputs are made
+unambiguous by adding the `US` country code, and the configured default uses
+exact coordinates. Requests have a 10-second timeout. Raises
+`httpx.HTTPStatusError` on non-2xx responses, `httpx.RequestError` on network
+failure, and `ValueError` for an unknown location.
 
 #### `weather_friend.services.message_service.MessageService`
 

@@ -87,12 +87,12 @@ async def _weather_for_request(request: web.Request) -> tuple[WeatherData, str]:
         A tuple of the fetched WeatherData and the requested location.
 
     Raises:
-        web.HTTPBadRequest: If the location param is missing or the
-            weather service rejects it.
+        web.HTTPBadRequest: If the weather service rejects the location.
     """
     location = request.query.get("location")
     if not location:
-        raise _bad_request("location required")
+        service = request.app[WEATHER_SERVICE_KEY]
+        return await service.get_current_weather(), service.city
     try:
         weather = await request.app[WEATHER_SERVICE_KEY].get_weather_for_location(
             location

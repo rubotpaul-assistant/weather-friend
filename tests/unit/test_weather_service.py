@@ -120,6 +120,48 @@ class TestWeatherService:
         assert params["units"] == "imperial"
 
     @pytest.mark.asyncio()
+    async def test_get_current_weather_uses_forecast_daily_extrema(self) -> None:
+        """Test that daily highs and lows come from local-day forecasts."""
+        current = _sample_api_response()
+        current.update({"dt": 1_722_532_800, "coord": {"lat": 37.3, "lon": -121.9}})
+        forecast = {
+            "city": {"timezone": -25_200},
+            "list": [
+                {
+                    "dt": 1_722_535_600,
+                    "main": {"temp_min": 61.0, "temp_max": 88.0},
+                },
+                {
+                    "dt": 1_722_546_400,
+                    "main": {"temp_min": 64.0, "temp_max": 84.0},
+                },
+                {
+                    "dt": 1_722_621_600,
+                    "main": {"temp_min": 58.0, "temp_max": 79.0},
+                },
+            ],
+        }
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [
+            _mock_response(current),
+            _mock_response(forecast),
+        ]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "weather_friend.services.weather_service.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            weather = await _make_service().get_current_weather()
+
+        assert weather.high_f == 88.0
+        assert weather.low_f == 58.0
+        forecast_params = mock_client.get.call_args_list[1].kwargs["params"]
+        assert forecast_params["lat"] == 37.3382
+        assert forecast_params["lon"] == -121.8863
+
+    @pytest.mark.asyncio()
     async def test_get_current_weather_uses_explicit_timeout(self) -> None:
         """Test that the httpx client is created with an explicit timeout."""
         service = _make_service()
@@ -138,7 +180,8 @@ class TestWeatherService:
         ) as mock_constructor:
             await service.get_current_weather()
 
-        mock_constructor.assert_called_once_with(timeout=10.0)
+        assert mock_constructor.call_count == 2
+        mock_constructor.assert_called_with(timeout=10.0)
 
     @pytest.mark.asyncio()
     async def test_get_current_weather_http_error(self) -> None:
@@ -216,10 +259,10 @@ class TestGetWeatherForLocation:
             "weather_friend.services.weather_service.httpx.AsyncClient",
             return_value=mock_client,
         ):
-            await service.get_weather_for_location("Portland,OR")
+            await service.get_weather_for_location("San Jose,CA")
 
-        params = mock_client.get.call_args.kwargs["params"]
-        assert params["q"] == "Portland,OR"
+        params = mock_client.get.call_args_list[0].kwargs["params"]
+        assert params["q"] == "San Jose,CA,US"
         assert params["appid"] == "fake-key"
         assert params["units"] == "imperial"
         assert "lat" not in params

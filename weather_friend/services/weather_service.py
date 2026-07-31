@@ -1,6 +1,7 @@
 """Fetches weather data from OpenWeatherMap API."""
 
 import logging
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
@@ -9,7 +10,64 @@ from weather_friend.models.weather import WeatherData
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
+FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
 _REQUEST_TIMEOUT = 10.0
+
+_US_STATE_CODES = frozenset(
+    {
+        "AL",
+        "AK",
+        "AZ",
+        "AR",
+        "CA",
+        "CO",
+        "CT",
+        "DE",
+        "FL",
+        "GA",
+        "HI",
+        "ID",
+        "IL",
+        "IN",
+        "IA",
+        "KS",
+        "KY",
+        "LA",
+        "ME",
+        "MD",
+        "MA",
+        "MI",
+        "MN",
+        "MS",
+        "MO",
+        "MT",
+        "NE",
+        "NV",
+        "NH",
+        "NJ",
+        "NM",
+        "NY",
+        "NC",
+        "ND",
+        "OH",
+        "OK",
+        "OR",
+        "PA",
+        "RI",
+        "SC",
+        "SD",
+        "TN",
+        "TX",
+        "UT",
+        "VT",
+        "VA",
+        "WA",
+        "WV",
+        "WI",
+        "WY",
+        "DC",
+    }
+)
 
 
 class WeatherService:
@@ -52,7 +110,13 @@ class WeatherService:
             "units": "imperial",
         }
         data = await self._fetch(params)
-        return self._build_weather_data(data, city=self.city)
+        forecast = await self._fetch(
+            self._forecast_params(lat=self.lat, lon=self.lon), url=FORECAST_URL
+        )
+        high_f, low_f = self._daily_extrema(data, forecast)
+        return self._build_weather_data(
+            data, city=self.city, high_f=high_f, low_f=low_f
+        )
 
     async def get_weather_for_location(self, location: str) -> WeatherData:
         """Fetch current weather data for an arbitrary location string.
@@ -70,8 +134,9 @@ class WeatherService:
             httpx.HTTPStatusError: If the API returns any other error status.
             httpx.RequestError: If the request fails due to network issues.
         """
+        provider_location = self._canonical_location(location)
         params: dict[str, str | float] = {
-            "q": location,
+            "q": provider_location,
             "appid": self._api_key,
             "units": "imperial",
         }
@@ -83,9 +148,16 @@ class WeatherService:
                 raise ValueError(msg) from exc
             raise
         city = str(data.get("name") or location)
-        return self._build_weather_data(data, city=city)
+        forecast = await self._fetch(
+            self._forecast_params_for_location(data, provider_location),
+            url=FORECAST_URL,
+        )
+        high_f, low_f = self._daily_extrema(data, forecast)
+        return self._build_weather_data(data, city=city, high_f=high_f, low_f=low_f)
 
-    async def _fetch(self, params: dict[str, str | float]) -> dict:
+    async def _fetch(
+        self, params: dict[str, str | float], *, url: str = BASE_URL
+    ) -> dict:
         """Call the OpenWeatherMap API and return the parsed JSON body.
 
         Args:
@@ -104,7 +176,7 @@ class WeatherService:
             async with httpx.AsyncClient(
                 timeout=_REQUEST_TIMEOUT,
             ) as client:
-                response = await client.get(BASE_URL, params=params)
+                response = await client.get(url, params=params)
                 response.raise_for_status()
                 data: dict = response.json()
         except httpx.HTTPStatusError:
@@ -116,7 +188,13 @@ class WeatherService:
         return data
 
     @staticmethod
-    def _build_weather_data(data: dict, *, city: str) -> WeatherData:
+    def _build_weather_data(
+        data: dict,
+        *,
+        city: str,
+        high_f: float | None = None,
+        low_f: float | None = None,
+    ) -> WeatherData:
         """Map an OpenWeatherMap response body onto the WeatherData model.
 
         Args:
@@ -137,7 +215,87 @@ class WeatherService:
             humidity=int(main["humidity"]),
             description=str(weather["description"]),
             wind_speed_mph=float(wind["speed"]),
-            high_f=float(main["temp_max"]),
-            low_f=float(main["temp_min"]),
+            high_f=float(main["temp_max"] if high_f is None else high_f),
+            low_f=float(main["temp_min"] if low_f is None else low_f),
             icon=str(weather["icon"]),
         )
+
+    def _forecast_params(self, *, lat: float, lon: float) -> dict[str, str | float]:
+        """Build forecast parameters for exact coordinates."""
+        return {
+            "lat": lat,
+            "lon": lon,
+            "appid": self._api_key,
+            "units": "imperial",
+        }
+
+    def _forecast_params_for_location(
+        self, current: dict, provider_location: str
+    ) -> dict[str, str | float]:
+        """Reuse resolved coordinates so current and forecast locations match."""
+        coordinates = current.get("coord")
+        if isinstance(coordinates, dict) and {
+            "lat",
+            "lon",
+        }.issubset(coordinates):
+            return self._forecast_params(
+                lat=float(coordinates["lat"]), lon=float(coordinates["lon"])
+            )
+        return {
+            "q": provider_location,
+            "appid": self._api_key,
+            "units": "imperial",
+        }
+
+    @staticmethod
+    def _canonical_location(location: str) -> str:
+        """Disambiguate OpenWeatherMap queries containing a US state code."""
+        parts = [part.strip() for part in location.split(",")]
+        if len(parts) == 2 and parts[1].upper() in _US_STATE_CODES:
+            return f"{parts[0]},{parts[1].upper()},US"
+        return location
+
+    @staticmethod
+    def _daily_extrema(current: dict, forecast: dict) -> tuple[float, float]:
+        """Calculate extrema from forecast intervals in the local calendar day."""
+        current_main = current["main"]
+        highs = [float(current_main["temp_max"])]
+        lows = [float(current_main["temp_min"])]
+        timezone_offset = WeatherService._timezone_offset(forecast, current)
+        current_day = WeatherService._local_date(
+            int(current.get("dt", datetime.now(tz=UTC).timestamp())), timezone_offset
+        )
+
+        entries = forecast.get("list", [])
+        if not isinstance(entries, list):
+            return max(highs), min(lows)
+        for entry in entries:
+            if not isinstance(entry, dict) or "dt" not in entry:
+                continue
+            if (
+                WeatherService._local_date(int(entry["dt"]), timezone_offset)
+                != current_day
+            ):
+                continue
+            main = entry.get("main")
+            if not isinstance(main, dict):
+                continue
+            highs.append(float(main["temp_max"]))
+            lows.append(float(main["temp_min"]))
+        return max(highs), min(lows)
+
+    @staticmethod
+    def _timezone_offset(forecast: dict, current: dict) -> int:
+        """Read the provider's UTC offset from either response shape."""
+        city = forecast.get("city")
+        if isinstance(city, dict) and "timezone" in city:
+            return int(city["timezone"])
+        return int(current.get("timezone", 0))
+
+    @staticmethod
+    def _local_date(timestamp: int, timezone_offset: int) -> date:
+        """Convert a Unix timestamp to a date at a fixed UTC offset."""
+        return (
+            datetime.fromtimestamp(timestamp, tz=UTC)
+            + timedelta(seconds=timezone_offset)
+        ).date()

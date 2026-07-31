@@ -27,6 +27,8 @@ def shared_secret(monkeypatch: pytest.MonkeyPatch) -> str:
 def weather_service(sample_weather: WeatherData) -> MagicMock:
     """Create a WeatherService double returning sample weather."""
     service = MagicMock()
+    service.city = "San Jose"
+    service.get_current_weather = AsyncMock(return_value=sample_weather)
     service.get_weather_for_location = AsyncMock(return_value=sample_weather)
     return service
 
@@ -134,14 +136,15 @@ class TestWeatherData:
     async def test_missing_location(
         self, weather_service: MagicMock, message_service: MagicMock
     ) -> None:
-        """Test that a missing location query param gets 400."""
+        """Test that a missing location uses configured coordinates."""
         async with _api_client(weather_service, message_service) as client:
             resp = await client.get("/api/v1/weather/data", headers=_auth_headers())
 
-            assert resp.status == 400
+            assert resp.status == 200
             body = await resp.json()
 
-        assert body == {"error": "location required"}
+        assert body["location"] == "San Jose"
+        weather_service.get_current_weather.assert_awaited_once_with()
         weather_service.get_weather_for_location.assert_not_awaited()
 
     @pytest.mark.asyncio()
@@ -207,14 +210,16 @@ class TestWeatherForecast:
     async def test_missing_location(
         self, weather_service: MagicMock, message_service: MagicMock
     ) -> None:
-        """Test that a missing location query param gets 400."""
+        """Test that a missing location uses the configured default."""
         async with _api_client(weather_service, message_service) as client:
             resp = await client.get("/api/v1/weather/forecast", headers=_auth_headers())
 
-            assert resp.status == 400
+            assert resp.status == 200
             body = await resp.json()
 
-        assert body == {"error": "location required"}
+        assert body["location"] == "San Jose"
+        assert body["narrative"] == NARRATIVE
+        weather_service.get_current_weather.assert_awaited_once_with()
 
     @pytest.mark.asyncio()
     async def test_unknown_location_skips_narrative(
