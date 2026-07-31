@@ -1,7 +1,6 @@
-"""Fetches weather data from OpenWeatherMap API."""
+"""Fetch current conditions and complete daily forecast extrema."""
 
 import logging
-from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
@@ -10,7 +9,7 @@ from weather_friend.models.weather import WeatherData
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.openweathermap.org/data/2.5/weather"
-FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _REQUEST_TIMEOUT = 10.0
 
 _US_STATE_CODES = frozenset(
@@ -111,7 +110,8 @@ class WeatherService:
         }
         data = await self._fetch(params)
         forecast = await self._fetch(
-            self._forecast_params(lat=self.lat, lon=self.lon), url=FORECAST_URL
+            self._daily_forecast_params(lat=self.lat, lon=self.lon),
+            url=FORECAST_URL,
         )
         high_f, low_f = self._daily_extrema(data, forecast)
         return self._build_weather_data(
@@ -134,22 +134,10 @@ class WeatherService:
             httpx.HTTPStatusError: If the API returns any other error status.
             httpx.RequestError: If the request fails due to network issues.
         """
-        provider_location = self._canonical_location(location)
-        params: dict[str, str | float] = {
-            "q": provider_location,
-            "appid": self._api_key,
-            "units": "imperial",
-        }
-        try:
-            data = await self._fetch(params)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == httpx.codes.NOT_FOUND:
-                msg = f"unknown location: {location}"
-                raise ValueError(msg) from exc
-            raise
+        data = await self._fetch_location(location)
         city = str(data.get("name") or location)
         forecast = await self._fetch(
-            self._forecast_params_for_location(data, provider_location),
+            self._daily_forecast_params_for_location(data),
             url=FORECAST_URL,
         )
         high_f, low_f = self._daily_extrema(data, forecast)
@@ -179,8 +167,10 @@ class WeatherService:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
                 data: dict = response.json()
-        except httpx.HTTPStatusError:
-            logger.exception("Weather API HTTP error")
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "Weather provider returned HTTP %s", exc.response.status_code
+            )
             raise
         except httpx.RequestError:
             logger.exception("Weather API request failed")
@@ -220,82 +210,68 @@ class WeatherService:
             icon=str(weather["icon"]),
         )
 
-    def _forecast_params(self, *, lat: float, lon: float) -> dict[str, str | float]:
-        """Build forecast parameters for exact coordinates."""
+    @staticmethod
+    def _daily_forecast_params(*, lat: float, lon: float) -> dict[str, str | float]:
+        """Build Open-Meteo daily forecast parameters for exact coordinates."""
         return {
-            "lat": lat,
-            "lon": lon,
-            "appid": self._api_key,
-            "units": "imperial",
+            "latitude": lat,
+            "longitude": lon,
+            "daily": "temperature_2m_max,temperature_2m_min",
+            "temperature_unit": "fahrenheit",
+            "timezone": "auto",
+            "forecast_days": 1.0,
         }
 
-    def _forecast_params_for_location(
-        self, current: dict, provider_location: str
+    @staticmethod
+    def _daily_forecast_params_for_location(
+        current: dict,
     ) -> dict[str, str | float]:
-        """Reuse resolved coordinates so current and forecast locations match."""
+        """Build daily parameters from OpenWeatherMap-resolved coordinates."""
         coordinates = current.get("coord")
         if isinstance(coordinates, dict) and {
             "lat",
             "lon",
         }.issubset(coordinates):
-            return self._forecast_params(
+            return WeatherService._daily_forecast_params(
                 lat=float(coordinates["lat"]), lon=float(coordinates["lon"])
             )
-        return {
-            "q": provider_location,
-            "appid": self._api_key,
-            "units": "imperial",
-        }
+        msg = "weather provider response omitted coordinates"
+        raise ValueError(msg)
+
+    async def _fetch_location(self, location: str) -> dict:
+        """Resolve a location, retrying US state syntax only after a 404."""
+        last_not_found: httpx.HTTPStatusError | None = None
+        for provider_location in self._location_candidates(location):
+            params: dict[str, str | float] = {
+                "q": provider_location,
+                "appid": self._api_key,
+                "units": "imperial",
+            }
+            try:
+                return await self._fetch(params)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != httpx.codes.NOT_FOUND:
+                    raise
+                last_not_found = exc
+        msg = f"unknown location: {location}"
+        raise ValueError(msg) from last_not_found
 
     @staticmethod
-    def _canonical_location(location: str) -> str:
-        """Disambiguate OpenWeatherMap queries containing a US state code."""
+    def _location_candidates(location: str) -> tuple[str, ...]:
+        """Return the original query followed by a possible US-state query."""
         parts = [part.strip() for part in location.split(",")]
         if len(parts) == 2 and parts[1].upper() in _US_STATE_CODES:
-            return f"{parts[0]},{parts[1].upper()},US"
-        return location
+            return location, f"{parts[0]},{parts[1].upper()},US"
+        return (location,)
 
     @staticmethod
     def _daily_extrema(current: dict, forecast: dict) -> tuple[float, float]:
-        """Calculate extrema from forecast intervals in the local calendar day."""
-        current_main = current["main"]
-        highs = [float(current_main["temp_max"])]
-        lows = [float(current_main["temp_min"])]
-        timezone_offset = WeatherService._timezone_offset(forecast, current)
-        current_day = WeatherService._local_date(
-            int(current.get("dt", datetime.now(tz=UTC).timestamp())), timezone_offset
-        )
-
-        entries = forecast.get("list", [])
-        if not isinstance(entries, list):
-            return max(highs), min(lows)
-        for entry in entries:
-            if not isinstance(entry, dict) or "dt" not in entry:
-                continue
-            if (
-                WeatherService._local_date(int(entry["dt"]), timezone_offset)
-                != current_day
-            ):
-                continue
-            main = entry.get("main")
-            if not isinstance(main, dict):
-                continue
-            highs.append(float(main["temp_max"]))
-            lows.append(float(main["temp_min"]))
-        return max(highs), min(lows)
-
-    @staticmethod
-    def _timezone_offset(forecast: dict, current: dict) -> int:
-        """Read the provider's UTC offset from either response shape."""
-        city = forecast.get("city")
-        if isinstance(city, dict) and "timezone" in city:
-            return int(city["timezone"])
-        return int(current.get("timezone", 0))
-
-    @staticmethod
-    def _local_date(timestamp: int, timezone_offset: int) -> date:
-        """Convert a Unix timestamp to a date at a fixed UTC offset."""
-        return (
-            datetime.fromtimestamp(timestamp, tz=UTC)
-            + timedelta(seconds=timezone_offset)
-        ).date()
+        """Read complete local-day extrema from Open-Meteo's daily response."""
+        del current
+        daily = forecast["daily"]
+        highs = daily["temperature_2m_max"]
+        lows = daily["temperature_2m_min"]
+        if not highs or not lows:
+            msg = "daily forecast response contained no temperature extrema"
+            raise ValueError(msg)
+        return float(highs[0]), float(lows[0])

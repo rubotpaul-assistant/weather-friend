@@ -52,13 +52,14 @@ activity advice.
 
 1. Use configured latitude/longitude when the API location is omitted.
 2. Canonicalize two-part US city/state inputs to `city,state,US`.
-3. Resolve arbitrary locations once, then use the returned coordinates for
-   forecast retrieval so current and forecast data refer to the same place.
-4. Calculate daily extrema from forecast intervals in the location's local
-   calendar day, including the current observation as a lower bound.
+3. Preserve valid two-part city/country queries and retry a possible US-state
+   interpretation only after the original query returns 404.
+4. Resolve arbitrary locations once, then use the returned coordinates for
+   forecast retrieval so current and daily data refer to the same place.
+5. Source complete local-calendar-day extrema from Open-Meteo's daily fields;
+   do not mix observation-level extrema into that range.
 
 ## Prevention
 
 Add regression tests for default-coordinate routing, state/country
 canonicalization, coordinate reuse, and timezone-aware daily aggregation.
-

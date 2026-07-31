@@ -27,13 +27,25 @@ def _sample_api_response() -> dict:
         },
         "weather": [{"description": "scattered clouds", "icon": "03d"}],
         "wind": {"speed": 8.0},
+        "coord": {"lat": 37.3382, "lon": -121.8863},
+    }
+
+
+def _daily_response(*, high_f: float = 74.0, low_f: float = 58.0) -> dict:
+    """Return a sample Open-Meteo daily forecast response."""
+    return {
+        "daily": {
+            "time": ["2026-07-31"],
+            "temperature_2m_max": [high_f],
+            "temperature_2m_min": [low_f],
+        }
     }
 
 
 def _mock_client(response: MagicMock) -> AsyncMock:
     """Create an async-context-manager httpx client double."""
     client = AsyncMock()
-    client.get.return_value = response
+    client.get.side_effect = [response, _mock_response(_daily_response())]
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client
@@ -73,7 +85,10 @@ class TestWeatherService:
         mock_response.raise_for_status = MagicMock()
 
         mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
+        mock_client.get.side_effect = [
+            mock_response,
+            _mock_response(_daily_response()),
+        ]
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -102,7 +117,10 @@ class TestWeatherService:
         mock_response.raise_for_status = MagicMock()
 
         mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
+        mock_client.get.side_effect = [
+            mock_response,
+            _mock_response(_daily_response()),
+        ]
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -112,7 +130,7 @@ class TestWeatherService:
         ):
             await service.get_current_weather()
 
-        call_kwargs = mock_client.get.call_args
+        call_kwargs = mock_client.get.call_args_list[0]
         params = call_kwargs.kwargs.get("params") or call_kwargs[1].get("params")
         assert params["lat"] == 37.3382
         assert params["lon"] == -121.8863
@@ -123,24 +141,8 @@ class TestWeatherService:
     async def test_get_current_weather_uses_forecast_daily_extrema(self) -> None:
         """Test that daily highs and lows come from local-day forecasts."""
         current = _sample_api_response()
-        current.update({"dt": 1_722_532_800, "coord": {"lat": 37.3, "lon": -121.9}})
-        forecast = {
-            "city": {"timezone": -25_200},
-            "list": [
-                {
-                    "dt": 1_722_535_600,
-                    "main": {"temp_min": 61.0, "temp_max": 88.0},
-                },
-                {
-                    "dt": 1_722_546_400,
-                    "main": {"temp_min": 64.0, "temp_max": 84.0},
-                },
-                {
-                    "dt": 1_722_621_600,
-                    "main": {"temp_min": 58.0, "temp_max": 79.0},
-                },
-            ],
-        }
+        current["main"].update({"temp": 90.66, "temp_max": 94.51, "temp_min": 83.88})
+        forecast = _daily_response(high_f=88.0, low_f=60.0)
         mock_client = AsyncMock()
         mock_client.get.side_effect = [
             _mock_response(current),
@@ -156,10 +158,12 @@ class TestWeatherService:
             weather = await _make_service().get_current_weather()
 
         assert weather.high_f == 88.0
-        assert weather.low_f == 58.0
+        assert weather.low_f == 60.0
         forecast_params = mock_client.get.call_args_list[1].kwargs["params"]
-        assert forecast_params["lat"] == 37.3382
-        assert forecast_params["lon"] == -121.8863
+        assert forecast_params["latitude"] == 37.3382
+        assert forecast_params["longitude"] == -121.8863
+        assert forecast_params["daily"] == "temperature_2m_max,temperature_2m_min"
+        assert "appid" not in forecast_params
 
     @pytest.mark.asyncio()
     async def test_get_current_weather_uses_explicit_timeout(self) -> None:
@@ -170,7 +174,10 @@ class TestWeatherService:
         mock_response.raise_for_status = MagicMock()
 
         mock_client = AsyncMock()
-        mock_client.get.return_value = mock_response
+        mock_client.get.side_effect = [
+            mock_response,
+            _mock_response(_daily_response()),
+        ]
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
@@ -251,9 +258,22 @@ class TestGetWeatherForLocation:
 
     @pytest.mark.asyncio()
     async def test_sends_location_query_params(self) -> None:
-        """Test that the API call queries by location string."""
+        """Test that a failed US state query retries with a country code."""
         service = _make_service()
-        mock_client = _mock_client(_mock_response(_sample_api_response()))
+        not_found = MagicMock()
+        not_found.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Not Found",
+            request=MagicMock(),
+            response=MagicMock(status_code=404),
+        )
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [
+            not_found,
+            _mock_response(_sample_api_response()),
+            _mock_response(_daily_response()),
+        ]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch(
             "weather_friend.services.weather_service.httpx.AsyncClient",
@@ -261,12 +281,38 @@ class TestGetWeatherForLocation:
         ):
             await service.get_weather_for_location("San Jose,CA")
 
-        params = mock_client.get.call_args_list[0].kwargs["params"]
-        assert params["q"] == "San Jose,CA,US"
+        first_params = mock_client.get.call_args_list[0].kwargs["params"]
+        retry_params = mock_client.get.call_args_list[1].kwargs["params"]
+        assert first_params["q"] == "San Jose,CA"
+        assert retry_params["q"] == "San Jose,CA,US"
+        params = retry_params
         assert params["appid"] == "fake-key"
         assert params["units"] == "imperial"
         assert "lat" not in params
         assert "lon" not in params
+
+    @pytest.mark.asyncio()
+    async def test_preserves_valid_city_country_query(self) -> None:
+        """Test that country codes overlapping US states are not rewritten."""
+        service = _make_service()
+        payload = _sample_api_response()
+        payload["name"] = "Toronto"
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [
+            _mock_response(payload),
+            _mock_response(_daily_response()),
+        ]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "weather_friend.services.weather_service.httpx.AsyncClient",
+            return_value=mock_client,
+        ):
+            weather = await service.get_weather_for_location("Toronto,CA")
+
+        assert weather.city == "Toronto"
+        assert mock_client.get.call_args_list[0].kwargs["params"]["q"] == "Toronto,CA"
 
     @pytest.mark.asyncio()
     async def test_missing_name_falls_back_to_requested_location(self) -> None:
