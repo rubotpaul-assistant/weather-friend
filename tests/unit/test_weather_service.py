@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from weather_friend.services.weather_service import WeatherService
+from weather_friend.services.weather_service import WeatherProviderError, WeatherService
 
 
 def _make_service() -> WeatherService:
@@ -329,6 +329,52 @@ class TestGetWeatherForLocation:
             weather = await service.get_weather_for_location("Portland,OR")
 
         assert weather.city == "Portland,OR"
+
+    @pytest.mark.asyncio()
+    async def test_empty_daily_extrema_raises_provider_error(self) -> None:
+        """Test that incomplete forecast data is not a bad location error."""
+        service = _make_service()
+        empty_forecast = _daily_response()
+        empty_forecast["daily"]["temperature_2m_max"] = []
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = [
+            _mock_response(_sample_api_response()),
+            _mock_response(empty_forecast),
+        ]
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch(
+                "weather_friend.services.weather_service.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            pytest.raises(
+                WeatherProviderError,
+                match="daily forecast response contained no temperature extrema",
+            ),
+        ):
+            await service.get_weather_for_location("Portland,OR")
+
+    @pytest.mark.asyncio()
+    async def test_missing_coordinates_raises_provider_error(self) -> None:
+        """Test that incomplete location data is not a bad location error."""
+        service = _make_service()
+        current = _sample_api_response()
+        del current["coord"]
+        mock_client = _mock_client(_mock_response(current))
+
+        with (
+            patch(
+                "weather_friend.services.weather_service.httpx.AsyncClient",
+                return_value=mock_client,
+            ),
+            pytest.raises(
+                WeatherProviderError,
+                match="weather provider response omitted coordinates",
+            ),
+        ):
+            await service.get_weather_for_location("Portland,OR")
 
     @pytest.mark.asyncio()
     async def test_unknown_location_raises_value_error(self) -> None:

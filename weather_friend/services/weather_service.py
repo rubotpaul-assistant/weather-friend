@@ -69,6 +69,10 @@ _US_STATE_CODES = frozenset(
 )
 
 
+class WeatherProviderError(RuntimeError):
+    """Raised when a weather provider returns incomplete response data."""
+
+
 class WeatherService:
     """Service for retrieving current weather data from OpenWeatherMap.
 
@@ -99,6 +103,7 @@ class WeatherService:
             A WeatherData instance with the current conditions.
 
         Raises:
+            WeatherProviderError: If a provider response is incomplete.
             httpx.HTTPStatusError: If the API returns an error status.
             httpx.RequestError: If the request fails due to network issues.
         """
@@ -131,6 +136,7 @@ class WeatherService:
 
         Raises:
             ValueError: If the API does not recognize the location.
+            WeatherProviderError: If a provider response is incomplete.
             httpx.HTTPStatusError: If the API returns any other error status.
             httpx.RequestError: If the request fails due to network issues.
         """
@@ -236,7 +242,7 @@ class WeatherService:
                 lat=float(coordinates["lat"]), lon=float(coordinates["lon"])
             )
         msg = "weather provider response omitted coordinates"
-        raise ValueError(msg)
+        raise WeatherProviderError(msg)
 
     async def _fetch_location(self, location: str) -> dict:
         """Resolve a location, retrying US state syntax only after a 404."""
@@ -273,5 +279,5 @@ class WeatherService:
         lows = daily["temperature_2m_min"]
         if not highs or not lows:
             msg = "daily forecast response contained no temperature extrema"
-            raise ValueError(msg)
+            raise WeatherProviderError(msg)
         return float(highs[0]), float(lows[0])
