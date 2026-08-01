@@ -163,6 +163,8 @@ class TestWeatherService:
         assert forecast_params["latitude"] == 37.3382
         assert forecast_params["longitude"] == -121.8863
         assert forecast_params["daily"] == "temperature_2m_max,temperature_2m_min"
+        assert forecast_params["forecast_days"] == 1
+        assert isinstance(forecast_params["forecast_days"], int)
         assert "appid" not in forecast_params
 
     @pytest.mark.asyncio()

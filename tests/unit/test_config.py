@@ -53,3 +53,28 @@ class TestApiSettings:
         )
         with pytest.raises(AttributeError, match="cannot assign"):
             settings.port = 9000  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        ("latitude", "longitude", "message"),
+        [(91.0, 0.0, "latitude"), (0.0, -181.0, "longitude")],
+    )
+    def test_rejects_out_of_range_coordinates(
+        self, latitude: float, longitude: float, message: str
+    ) -> None:
+        """Test that coordinates must fit geographic bounds."""
+        with pytest.raises(ValueError, match=message):
+            ApiSettings(
+                openweather_api_key="w",
+                anthropic_api_key="a",
+                latitude=latitude,
+                longitude=longitude,
+            )
+
+    def test_rejects_blank_city_name(self) -> None:
+        """Test that the configured display name cannot be blank."""
+        with pytest.raises(ValueError, match="city"):
+            ApiSettings(
+                openweather_api_key="w",
+                anthropic_api_key="a",
+                city_name="  ",
+            )

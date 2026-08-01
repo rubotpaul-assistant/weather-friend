@@ -167,8 +167,10 @@ ApiSettings.from_env() -> ApiSettings
 
 Required env vars: `OPENWEATHER_API_KEY`, `ANTHROPIC_API_KEY`,
 `RUBOTPAUL_SHARED_SECRET`. Optional: `WEATHER_FRIEND_API_PORT` (default
-`8002`); location fields default to San Jose, CA. Raises `RuntimeError`
-naming every missing required var, `ValueError` for an invalid port.
+`8002`) plus `WEATHER_FRIEND_LATITUDE`, `WEATHER_FRIEND_LONGITUDE`, and
+`WEATHER_FRIEND_CITY_NAME`; location fields default to San Jose, CA. Raises
+`RuntimeError` naming every missing required var and `ValueError` for invalid
+ports, coordinates, or city names.
 
 #### `weather_friend.api`
 
@@ -231,11 +233,13 @@ OPENWEATHER_API_KEY=...        # https://openweathermap.org/api
 ANTHROPIC_API_KEY=...          # https://console.anthropic.com/
 RUBOTPAUL_SHARED_SECRET=...    # shared across RubotPaul-callable services
 WEATHER_FRIEND_API_PORT=8002   # optional, default 8002
+WEATHER_FRIEND_LATITUDE=37.3382
+WEATHER_FRIEND_LONGITUDE=-121.8863
+WEATHER_FRIEND_CITY_NAME=San Jose
 ```
 
-Location overrides (defaults shown) live in `ApiSettings`:
-`latitude=37.3382`, `longitude=-121.8863`, `city_name="San Jose"`. Adjust
-by editing `config.py` or extending `ApiSettings.from_env`.
+Location overrides are optional; omitting them uses the San Jose defaults
+shown above.
 
 ---
 

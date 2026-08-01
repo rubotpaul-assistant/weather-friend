@@ -14,8 +14,11 @@ from weather_friend.api import main, serve
 from weather_friend.auth_middleware import SECRET_ENV_VAR
 from weather_friend.config import (
     API_PORT_ENV_VAR,
+    CITY_NAME_ENV_VAR,
     DEFAULT_API_HOST,
     DEFAULT_API_PORT,
+    LATITUDE_ENV_VAR,
+    LONGITUDE_ENV_VAR,
     ApiSettings,
 )
 
@@ -29,6 +32,9 @@ def api_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
     monkeypatch.setenv(SECRET_ENV_VAR, TEST_SECRET)
     monkeypatch.delenv(API_PORT_ENV_VAR, raising=False)
+    monkeypatch.delenv(LATITUDE_ENV_VAR, raising=False)
+    monkeypatch.delenv(LONGITUDE_ENV_VAR, raising=False)
+    monkeypatch.delenv(CITY_NAME_ENV_VAR, raising=False)
 
 
 def _free_port() -> int:
@@ -91,6 +97,31 @@ class TestApiSettings:
         monkeypatch.setenv(API_PORT_ENV_VAR, "9010")
 
         assert ApiSettings.from_env().port == 9010
+
+    def test_from_env_custom_location(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that location environment variables override San Jose."""
+        monkeypatch.setenv(LATITUDE_ENV_VAR, "32.7157")
+        monkeypatch.setenv(LONGITUDE_ENV_VAR, "-117.1611")
+        monkeypatch.setenv(CITY_NAME_ENV_VAR, "San Diego")
+
+        settings = ApiSettings.from_env()
+
+        assert settings.latitude == 32.7157
+        assert settings.longitude == -117.1611
+        assert settings.city_name == "San Diego"
+
+    @pytest.mark.parametrize(
+        ("variable", "value"),
+        [(LATITUDE_ENV_VAR, "north"), (LONGITUDE_ENV_VAR, "west")],
+    )
+    def test_from_env_invalid_coordinate(
+        self, monkeypatch: pytest.MonkeyPatch, variable: str, value: str
+    ) -> None:
+        """Test that nonnumeric coordinates identify the invalid variable."""
+        monkeypatch.setenv(variable, value)
+
+        with pytest.raises(ValueError, match=variable):
+            ApiSettings.from_env()
 
     def test_from_env_missing_vars_lists_all(
         self, monkeypatch: pytest.MonkeyPatch

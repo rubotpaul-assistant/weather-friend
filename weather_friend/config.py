@@ -13,6 +13,19 @@ DEFAULT_CITY_NAME: Final[str] = "San Jose"
 DEFAULT_API_HOST: Final[str] = "127.0.0.1"
 DEFAULT_API_PORT: Final[int] = 8002
 API_PORT_ENV_VAR: Final[str] = "WEATHER_FRIEND_API_PORT"
+LATITUDE_ENV_VAR: Final[str] = "WEATHER_FRIEND_LATITUDE"
+LONGITUDE_ENV_VAR: Final[str] = "WEATHER_FRIEND_LONGITUDE"
+CITY_NAME_ENV_VAR: Final[str] = "WEATHER_FRIEND_CITY_NAME"
+
+
+def _float_from_env(name: str, default: float) -> float:
+    """Read a floating-point environment variable with a clear error."""
+    raw_value = os.environ.get(name, str(default))
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        msg = f"{name} must be a number, got {raw_value!r}"
+        raise ValueError(msg) from exc
 
 
 @dataclass(frozen=True)
@@ -49,6 +62,15 @@ class ApiSettings:
         if not 1 <= self.port <= 65535:
             msg = f"port must be 1-65535, got {self.port}"
             raise ValueError(msg)
+        if not -90 <= self.latitude <= 90:
+            msg = f"latitude must be -90 to 90, got {self.latitude}"
+            raise ValueError(msg)
+        if not -180 <= self.longitude <= 180:
+            msg = f"longitude must be -180 to 180, got {self.longitude}"
+            raise ValueError(msg)
+        if not self.city_name.strip():
+            msg = "city name must not be blank"
+            raise ValueError(msg)
 
     @classmethod
     def from_env(cls) -> "ApiSettings":
@@ -81,4 +103,7 @@ class ApiSettings:
             openweather_api_key=os.environ["OPENWEATHER_API_KEY"],
             anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
             port=port,
+            latitude=_float_from_env(LATITUDE_ENV_VAR, DEFAULT_LATITUDE),
+            longitude=_float_from_env(LONGITUDE_ENV_VAR, DEFAULT_LONGITUDE),
+            city_name=os.environ.get(CITY_NAME_ENV_VAR, DEFAULT_CITY_NAME).strip(),
         )

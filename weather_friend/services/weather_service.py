@@ -219,7 +219,7 @@ class WeatherService:
             "daily": "temperature_2m_max,temperature_2m_min",
             "temperature_unit": "fahrenheit",
             "timezone": "auto",
-            "forecast_days": 1.0,
+            "forecast_days": 1,
         }
 
     @staticmethod
